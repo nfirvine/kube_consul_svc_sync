@@ -1,0 +1,4 @@
+package: github.com/nfirvine/kube_consul_svc_sync
+import:
+
+- package: github.com/Sirupsen/logrus
