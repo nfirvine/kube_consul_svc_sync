@@ -1,4 +1,32 @@
 package: github.com/nfirvine/kube_consul_svc_sync
 import:
-
 - package: github.com/Sirupsen/logrus
+- package: github.com/golang/glog
+- package: k8s.io/api
+  subpackages:
+  - apps/v1beta2
+  - core/v1
+- package: k8s.io/apimachinery
+  subpackages:
+  - pkg/api/errors
+  - pkg/apis/meta/v1
+  - pkg/runtime/schema
+  - pkg/util/runtime
+  - pkg/util/wait
+- package: k8s.io/client-go
+  subpackages:
+  - informers
+  - kubernetes
+  - kubernetes/scheme
+  - kubernetes/typed/core/v1
+  - listers/apps/v1beta2
+  - tools/cache
+  - tools/record
+  - util/workqueue
+- package: k8s.io/sample-controller
+  subpackages:
+  - pkg/apis/samplecontroller/v1alpha1
+  - pkg/client/clientset/versioned
+  - pkg/client/clientset/versioned/scheme
+  - pkg/client/informers/externalversions
+  - pkg/client/listers/samplecontroller/v1alpha1
