@@ -56,10 +56,7 @@ type Controller struct {
 }
 
 // NewController returns a new sample controller
-func NewController(
-	kubeclientset kubernetes.Interface,
-	kubeInformerFactory kubeinformers.SharedInformerFactory,
-) *Controller {
+func NewController(kubeclientset kubernetes.Interface, kubeInformerFactory kubeinformers.SharedInformerFactory) *Controller {
 
 	// obtain references to shared index informers for Endpoints
 	endpointsInformer := kubeInformerFactory.Core().V1().Endpoints()

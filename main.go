@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/golang/glog"
+	"k8s.io/apimachinery/pkg/apis/meta/v1"
 	kubeinformers "k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
@@ -19,6 +20,7 @@ import (
 var (
 	masterURL  string
 	kubeconfig string
+	namespace  string
 )
 
 func main() {
@@ -37,7 +39,14 @@ func main() {
 		glog.Fatalf("Error building kubernetes clientset: %s", err.Error())
 	}
 
-	kubeInformerFactory := kubeinformers.NewSharedInformerFactory(kubeClient, time.Second*30)
+	var kubeInformerFactory kubeinformers.SharedInformerFactory
+	if namespace != "" {
+		kubeInformerFactory = kubeinformers.NewFilteredSharedInformerFactory(
+			kubeClient, time.Second*30, namespace, func(_ *v1.ListOptions) {})
+	} else {
+		kubeInformerFactory = kubeinformers.NewSharedInformerFactory(
+			kubeClient, time.Second*30)
+	}
 
 	controller := NewController(kubeClient, kubeInformerFactory)
 
@@ -51,4 +60,5 @@ func main() {
 func init() {
 	flag.StringVar(&kubeconfig, "kubeconfig", "", "Path to a kubeconfig. Only required if out-of-cluster.")
 	flag.StringVar(&masterURL, "master", "", "The address of the Kubernetes API server. Overrides any value in kubeconfig. Only required if out-of-cluster.")
+	flag.StringVar(&namespace, "namespace", "", "Only watch this namespace; default: all")
 }
