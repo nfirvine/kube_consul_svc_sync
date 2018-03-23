@@ -1,3 +1,5 @@
+Warning: this was an experiment that showed that the approach won't work.
+
 # kube_consul_svc_sync
 
 Synchronize Kubernetes services to Consul

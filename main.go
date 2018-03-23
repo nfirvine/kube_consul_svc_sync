@@ -4,6 +4,7 @@ package main
 
 import (
 	"flag"
+	"text/template"
 	"time"
 
 	"github.com/golang/glog"
@@ -17,10 +18,15 @@ import (
 	"k8s.io/sample-controller/pkg/signals"
 )
 
+const consulNodeNameTmplStrDefault = `{{ .TargetNamespace }}-{{ .TargetName }}`
+const consulServiceNameTmplStrDefault = `{{ .EndpointsNamespace }}-{{ .EndpointsName }}-{{ .PortName }}`
+
 var (
-	masterURL  string
-	kubeconfig string
-	namespace  string
+	masterURL                string
+	kubeconfig               string
+	namespace                string
+	consulNodeNameTmplStr    string
+	consulServiceNameTmplStr string
 )
 
 func main() {
@@ -48,7 +54,25 @@ func main() {
 			kubeClient, time.Second*30)
 	}
 
-	controller := NewController(kubeClient, kubeInformerFactory)
+	consulNodeNameTmpl := template.New("consulNodeNameTmpl")
+	if consulNodeNameTmplStr == "" {
+		consulNodeNameTmplStr = consulNodeNameTmplStrDefault
+	}
+	consulNodeNameTmpl, err = consulNodeNameTmpl.Parse(consulNodeNameTmplStr)
+	if err != nil {
+		glog.Fatalf("Error running controller: %s", err.Error())
+	}
+
+	consulServiceNameTmpl := template.New("consulServiceNameTmpl")
+	if consulNodeNameTmplStr == "" {
+		consulServiceNameTmplStr = consulServiceNameTmplStrDefault
+	}
+	consulServiceNameTmpl, err = consulServiceNameTmpl.Parse(consulNodeNameTmplStr)
+	if err != nil {
+		glog.Fatalf("Error running controller: %s", err.Error())
+	}
+
+	controller := NewController(kubeClient, kubeInformerFactory, consulNodeNameTmpl, consulServiceNameTmpl)
 
 	go kubeInformerFactory.Start(stopCh)
 
@@ -61,4 +85,7 @@ func init() {
 	flag.StringVar(&kubeconfig, "kubeconfig", "", "Path to a kubeconfig. Only required if out-of-cluster.")
 	flag.StringVar(&masterURL, "master", "", "The address of the Kubernetes API server. Overrides any value in kubeconfig. Only required if out-of-cluster.")
 	flag.StringVar(&namespace, "namespace", "", "Only watch this namespace; default: all")
+	flag.StringVar(&consulNodeNameTmplStr, "nodenametmpl", consulNodeNameTmplStrDefault, "consul node name template (Go's text/template)")
+	flag.StringVar(&consulServiceNameTmplStr, "servicenametmpl", consulServiceNameTmplStrDefault, "consul service name template (Go's text/template)")
+
 }

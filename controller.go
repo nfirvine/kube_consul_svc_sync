@@ -3,7 +3,9 @@ package main
 // Adapted from https://github.com/kubernetes/sample-controller/blob/master/controller.go
 
 import (
+	"bytes"
 	"fmt"
+	texttemplate "text/template"
 	"time"
 
 	"github.com/golang/glog"
@@ -17,6 +19,8 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
+
+	consulapi "github.com/hashicorp/consul/api"
 )
 
 const controllerAgentName = "kube-consul-svc-sync-controller"
@@ -36,6 +40,18 @@ const (
 	MessageResourceSynced = "Foo synced successfully"
 )
 
+type ConsulTemplateData struct {
+	EndpointsNamespace string
+	EndpointsName      string
+	PortName           string
+	PortNumber         int32
+	//TODO: not sure we need this, and not sure Consul differentiates
+	//PortProtocol       string
+	IP              string
+	TargetNamespace string
+	TargetName      string
+}
+
 // Controller is the controller implementation for Foo resources
 type Controller struct {
 	// kubeclientset is a standard kubernetes clientset
@@ -44,19 +60,19 @@ type Controller struct {
 	endpointsLister corelisters.EndpointsLister
 	endpointsSynced cache.InformerSynced
 
-	// workqueue is a rate limited work queue. This is used to queue work to be
-	// processed instead of performing it as soon as a change happens. This
-	// means we can ensure we only process a fixed amount of resources at a
-	// time, and makes it easy to ensure we are never processing the same item
-	// simultaneously in two different workers.
+	// Unlike sample,
 	workqueue workqueue.RateLimitingInterface
 	// recorder is an event recorder for recording Event resources to the
 	// Kubernetes API.
 	recorder record.EventRecorder
+
+	// templates filled with data adhering to ConsulTemplateData struct
+	consulNodeNameTmpl    *texttemplate.Template
+	consulServiceNameTmpl *texttemplate.Template
 }
 
 // NewController returns a new sample controller
-func NewController(kubeclientset kubernetes.Interface, kubeInformerFactory kubeinformers.SharedInformerFactory) *Controller {
+func NewController(kubeclientset kubernetes.Interface, kubeInformerFactory kubeinformers.SharedInformerFactory, consulNodeNameTmpl *texttemplate.Template, consulServiceNameTempl *texttemplate.Template) *Controller {
 
 	// obtain references to shared index informers for Endpoints
 	endpointsInformer := kubeInformerFactory.Core().V1().Endpoints()
@@ -66,11 +82,13 @@ func NewController(kubeclientset kubernetes.Interface, kubeInformerFactory kubei
 	recorder := record.NewFakeRecorder(1024 * 1024)
 
 	controller := &Controller{
-		kubeclientset:   kubeclientset,
-		endpointsLister: endpointsInformer.Lister(),
-		endpointsSynced: endpointsInformer.Informer().HasSynced,
-		workqueue:       workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "Foos"),
-		recorder:        recorder,
+		kubeclientset:         kubeclientset,
+		endpointsLister:       endpointsInformer.Lister(),
+		endpointsSynced:       endpointsInformer.Informer().HasSynced,
+		workqueue:             workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "Foos"),
+		recorder:              recorder,
+		consulNodeNameTmpl:    consulNodeNameTmpl,
+		consulServiceNameTmpl: consulServiceNameTempl,
 	}
 
 	// Set up an event handler for when Deployment resources change. This
@@ -188,24 +206,74 @@ func (c *Controller) processNextWorkItem() bool {
 	return true
 }
 
-// syncHandler compares the actual state with the desired, and attempts to
-// converge the two. It then updates the Status block of the Foo resource
-// with the current status of the resource.
 func (c *Controller) syncHandler(key string) error {
-	// Convert the namespace/name string into a distinct namespace and name
-	namespace, name, err := cache.SplitMetaNamespaceKey(key)
+	endpointsNamespace, endpointsName, err := cache.SplitMetaNamespaceKey(key)
 	if err != nil {
 		runtime.HandleError(fmt.Errorf("invalid resource key: %s", key))
 		return nil
 	}
 
-	glog.Infof("Syncing '%s/%s'", namespace, name)
+	glog.Infof("Syncing '%s/%s'", endpointsNamespace, endpointsName)
 
-	//TODO sync
+	endpoints, err := c.endpointsLister.Endpoints(endpointsNamespace).Get(endpointsName)
+
+	for _, subset := range endpoints.Subsets {
+		for _, port := range subset.Ports {
+			portName := port.Name
+			portNumber := port.Port
+			//TODO not sure we need this
+			//portProtocol := port.Protocol
+			for _, addr := range subset.Addresses {
+				ip := addr.IP
+				// TODO safe to assume these exist for every object ref?
+				targetName := addr.TargetRef.Name
+				targetNamespace := addr.TargetRef.Namespace
+				data := &ConsulTemplateData{
+					IP:                 ip,
+					EndpointsNamespace: endpointsNamespace,
+					EndpointsName:      endpointsName,
+					PortName:           portName,
+					PortNumber:         portNumber,
+					TargetNamespace:    targetNamespace,
+					TargetName:         targetName,
+				}
+				nodeNameBuf := &bytes.Buffer{}
+				serviceNameBuf := &bytes.Buffer{}
+				c.consulNodeNameTmpl.Execute(nodeNameBuf, data)
+				c.consulServiceNameTmpl.Execute(serviceNameBuf, data)
+				nodeName := nodeNameBuf.String()
+				serviceName := serviceNameBuf.String()
+				catalogService := &consulapi.AgentService{
+					Service: serviceName,
+					Port:    int(portNumber),
+					Address: ip,
+				}
+				catalogRegistration := &consulapi.CatalogRegistration{
+					Node:    nodeName,
+					Address: ip,
+					Service: catalogService,
+				}
+				glog.V(4).Infof("Registration for %s/%s: %#v ;; service: %#v", namespace, endpointsName, catalogRegistration, catalogService)
+				//TODO register
+			}
+		}
+	}
+
 	return nil
 }
 
+func (c *Controller) enqueueEndpoints(endpoints *corev1.Endpoints) {
+	var key string
+	var err error
+	if key, err = cache.MetaNamespaceKeyFunc(endpoints); err != nil {
+		runtime.HandleError(err)
+		return
+	}
+	c.workqueue.AddRateLimited(key)
+}
+
 func (c *Controller) handleObject(obj interface{}) {
+	// TODO: not really sure what this Tombstone stuff is about
 	var object metav1.Object
 	var ok bool
 	if object, ok = obj.(metav1.Object); !ok {
@@ -222,12 +290,12 @@ func (c *Controller) handleObject(obj interface{}) {
 		glog.V(4).Infof("Recovered deleted object '%s' from tombstone", object.GetName())
 	}
 	glog.V(4).Infof("Processing object: %v", object)
-	//TODO: actually do a thing
 
 	var endpoints *corev1.Endpoints
-	if endpoints, ok = obj.(*corev1.Endpoints); !ok {
-		runtime.HandleError(fmt.Errorf("error decoding object to endpoints"))
+	if endpoints, ok = object.(*corev1.Endpoints); !ok {
+		runtime.HandleError(fmt.Errorf("error decoding object, invalid type"))
 		return
 	}
-	glog.V(4).Infof("Subsets for %s/%s: %v", object.GetNamespace(), object.GetName(), endpoints.Subsets)
+
+	c.enqueueEndpoints(endpoints)
 }
